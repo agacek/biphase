@@ -1,0 +1,469 @@
+------------------------------------------------------------------------------
+-- Geoffrey Brown, Indiana University <geobrown @ cs.indiana.edu>           --  
+-- Lee Pike, Galois Connections <leepike @ galois.com>                      --
+-- Copyright, 2005                                                          --
+--                                                                          --
+-- SAL 2.3 (2.4 compatible)                                                 --
+--                                                                          --
+-- Specification and verification of a Biphase Mark decoder.                --
+--                                                                          --
+-- A paper describing this specification, to appear in TACAS 2006 is        --
+-- available from the authors.                                              --
+--                                                                          --
+-- Translated to Lustre by Andrew Gacek <andrew.gacek@gmail.com>            --
+------------------------------------------------------------------------------
+
+type TIME = real;
+
+const TPERIOD : TIME = 16.0;
+const TSAMPLE : TIME = 23.0;
+
+node TSETTLE(x : TIME) returns (constraint : bool);
+let
+  -- The following leads to an error
+  -- constraint = (0.0 <= x and x < TPERIOD / 2.0) and (true -> x = pre x);
+  constraint = (0.0 <= x and x < TPERIOD / 4.0) and (true -> x = pre x);
+tel;
+
+node TSTABLE(x, TSETTLE : TIME) returns (constraint : bool);
+let
+  constraint = (x = TPERIOD - TSETTLE) and (true -> x = pre x);
+tel;
+
+-- The following is verifiable directly.
+--  ERROR : { x : TIME | 0 <= x AND
+--                       (9*TPERIOD + TSETTLE < 8*TPERIOD*(1-x) + TSAMPLE*(1-x)) AND
+--                       ((8*TPERIOD * (1+x) + TSAMPLE*(1+x) + (1+x) + TSETTLE) 
+--                                        < 10*TPERIOD)};
+--
+--  For maximum TSETTLE, ERROR < 3/151
+
+const MAXERROR : TIME = 3.0 / 151.0;
+const PERROR : TIME = TPERIOD * MAXERROR;
+
+node ERROR(x : TIME) returns (constraint : bool);
+let
+  constraint = (0.0 <= x and x < MAXERROR) and (true -> x = pre x);
+tel;
+
+node RPERIODMIN(x, ERROR : TIME) returns (constraint : bool);
+let
+  constraint = (x = TPERIOD * (1.0 - ERROR)) and (true -> x = pre x);
+tel;
+
+node RPERIODMAX(x, ERROR : TIME) returns (constraint : bool);
+let
+  constraint = (x = TPERIOD * (1.0 + ERROR)) and (true -> x = pre x);
+tel;
+
+node RSAMPMIN(x, ERROR : TIME) returns (constraint : bool);
+let
+  constraint = (x = TSAMPLE * (1.0 - ERROR)) and (true -> x = pre x);
+tel;
+
+node RSAMPMAX(x, ERROR : TIME) returns (constraint : bool);
+let
+  constraint = (x = TSAMPLE * (1.0 + ERROR)) and (true -> x = pre x);
+tel;
+
+node RSCANMIN(x, ERROR : TIME) returns (constraint : bool);
+let
+  constraint = (x = 1.0 - ERROR) and (true -> x = pre x);
+tel;
+
+node RSCANMAX(x, ERROR : TIME) returns (constraint : bool);
+let
+  constraint = (x = 1.0 + ERROR) and (true -> x = pre x);
+tel;
+
+
+------------------------------------------------------------------------------
+--  Clock module: makes time elapse up to the next timeout
+------------------------------------------------------------------------------
+
+node clock(rclk : TIME; -- INPUT
+           tclk : TIME; -- INPUT
+           time : TIME) -- OUTPUT
+returns (constraint : bool);
+var
+  INITIALIZATION : bool;
+  TRANSITION : bool;
+let
+  INITIALIZATION =
+    time = 0.0;
+
+  TRANSITION = true ->
+    (pre time < pre rclk and pre rclk <= pre tclk and -->
+       time = pre rclk) or
+    (pre time < pre tclk and pre tclk <= pre rclk and -->
+       time = pre tclk);
+
+  constraint = INITIALIZATION -> TRANSITION;
+tel;
+
+
+------------------------------------------------------------------------------
+-- Transmitter
+------------------------------------------------------------------------------
+
+type PHASE = enum { Stable, Settle };
+type WIRE = enum { Zero, One, ToZero, ToOne };
+
+node tclock(time : TIME;    -- INPUT
+            tclk : TIME;    -- OUTPUT
+            phase : PHASE;  -- OUTPUT
+            TSETTLE : TIME; -- PARAMETER
+            TSTABLE : TIME) -- PARAMETER
+returns (constraint : bool);
+var
+  INITIALIZATION : bool;
+  TRANSITION : bool;
+let
+  INITIALIZATION =
+    phase = Stable and
+    (0.0 <= tclk and tclk <= TSTABLE);
+
+  TRANSITION = true ->
+    (pre time = pre tclk and pre phase = Stable and -->
+       tclk = pre time + TSETTLE and
+       phase = Settle) or
+    (pre time = pre tclk and pre phase = Settle and -->
+       tclk = pre time + TSTABLE and
+       phase = Stable);
+
+  constraint = INITIALIZATION -> TRANSITION;
+tel;
+
+node tenv(tready : bool;                -- INPUT
+          tbit : subrange [0,1] of int) -- OUTPUT
+returns (constraint : bool);
+var
+  INITIALIZATION : bool;
+  TRANSITION : bool;
+let
+  INITIALIZATION =
+    tbit = 0 or tbit = 1;
+
+  TRANSITION = true ->
+    (pre tready and -->
+       (tbit = 0 or tbit = 1)) or
+    (not pre tready and -->
+       tbit = pre tbit);
+
+  constraint = INITIALIZATION -> TRANSITION;
+tel;
+
+node OneTransition(w : WIRE) returns (out : WIRE);
+let
+  out = if w <> One then ToOne else w;
+tel;
+
+node ZeroTransition(w : WIRE) returns (out : WIRE);
+let
+  out = if w <> Zero then ToZero else w;
+tel;
+
+node Stabilize(w : WIRE) returns (out : WIRE);
+let
+  out = if w = ToOne then One
+        else if w = ToZero then Zero
+        else w;
+tel;
+
+node tenc(phase : PHASE;                  -- INPUT
+          tdata : WIRE;                   -- OUTPUT
+          tstate : int;                   -- OUTPUT
+          tready : bool;                  -- OUTPUT
+          tbit : subrange [0,1] of int)   -- INPUT
+returns (constraint : bool);
+var
+  INITIALIZATION : bool;
+  DEFINITION : bool;
+  TRANSITION : bool;
+let
+  INITIALIZATION =
+    tdata = One and
+    tstate = 9;
+
+  DEFINITION =
+    tready = (phase = Stable and tstate < 8);
+    
+  TRANSITION = true ->
+    (pre phase = Stable and pre tstate = 9 and -->
+        tdata = pre tdata and
+        tstate = 9) or
+    (pre phase = Stable and pre tstate = 9 and -->
+       tdata = ToZero and
+       tstate = 0) or
+    (pre phase = Stable and pre tstate < 9 and -->
+       (tdata = if tbit = 1 or pre tstate = 8 then
+                  OneTransition(pre tdata)
+                else
+                  ZeroTransition(pre tdata)) and
+       tstate = pre tstate + 1) or
+    (pre phase = Settle and -->
+       tdata = Stabilize(pre tdata) and
+       tstate = pre tstate);
+
+  constraint = DEFINITION and (INITIALIZATION -> TRANSITION);
+tel;
+
+node tx(time : TIME;                    -- INPUT
+        tclk : TIME;                    -- OUTPUT
+        tdata : WIRE;                   -- OUTPUT
+        tstate : int;                   -- OUTPUT
+        phase : PHASE;                  -- LOCAL
+        tbit : subrange [0,1] of int;   -- LOCAL
+        tready : bool;                  -- LOCAL
+        TSETTLE : TIME;                 -- PARAMETER
+        TSTABLE : TIME)                 -- PARAMETER
+returns (constraint : bool);
+let
+  constraint = tclock(time, tclk, phase, TSETTLE, TSTABLE) and
+               tenv(tready, tbit) and
+               tenc(phase, tdata, tstate, tready, tbit);
+tel;
+
+
+------------------------------------------------------------------------------
+-- Receiver
+------------------------------------------------------------------------------
+
+node sample(w, x : WIRE) returns (constraint : bool);
+let
+  constraint =
+    if w = ToZero or w = ToOne then
+      x = Zero or x = One
+    else
+      x = w;
+tel;
+
+node timeout(min, max, x : TIME) returns (constraint : bool);
+let
+  constraint = min <= x and x <= max;
+tel;
+
+node rclock(time : TIME;                    -- INPUT
+            rstate : int;                   -- INPUT
+            rclk : TIME;                    -- OUTPUT
+            RPERIODMIN : TIME;              -- PARAMETER
+            RPERIODMAX : TIME;              -- PARAMETER
+            RSAMPMIN : TIME;                -- PARAMETER
+            RSAMPMAX : TIME;                -- PARAMETER
+            RSCANMIN : TIME;                -- PARAMETER
+            RSCANMAX : TIME)                -- PARAMETER
+returns (constraint : bool);
+var
+  INITIALIZATION : bool;
+  TRANSITION : bool;
+let
+  INITIALIZATION =
+    0.0 <= rclk and rclk < RSCANMAX;
+
+  TRANSITION = true ->
+    (pre time = pre rclk and -->
+      if rstate = 10 then
+        timeout(pre time + RSCANMIN, pre time + RSCANMAX, rclk)
+      else if rstate = 1 then
+        timeout(pre time + RSAMPMIN, pre time + RSAMPMAX, rclk)
+      else
+        timeout(pre time + RPERIODMIN, pre time + RPERIODMAX, rclk));
+
+  constraint = INITIALIZATION -> TRANSITION;
+tel;
+
+node rdec(tdata : WIRE;                   -- INPUT
+          rstate : int;                   -- OUTPUT
+          rdata : WIRE;                   -- OUTPUT
+          rbit : subrange [0,1] of int)   -- OUTPUT
+returns (constraint : bool);
+var
+  INITIALIZATION : bool;
+  TRANSITION : bool;
+let
+  INITIALIZATION =
+    rdata = One and
+    rstate = 10 and
+    (rbit = 0 or rbit = 1);
+
+  TRANSITION = true ->
+    (pre rstate = 10 and tdata <> Zero and -->
+       rstate = pre rstate and
+       rdata = One and
+       rbit = pre rbit) or
+    (pre rstate = 10 and tdata <> One and -->
+       rstate = 1 and
+       rdata = Zero and
+       rbit = pre rbit) or
+    (pre rstate <> 10 and -->
+       rstate = pre rstate + 1 and
+       sample(pre tdata, rdata) and
+       rbit = if rdata = One then 1 else 0);
+
+  constraint = INITIALIZATION -> TRANSITION;
+tel;
+
+node rx(time : TIME;                    -- INPUT
+        tdata : WIRE;                   -- INPUT
+        rclk : TIME;                    -- OUTPUT
+        rdata : WIRE;                   -- OUTPUT
+        rbit : subrange [0,1] of int;   -- OUTPUT            
+        rstate : int;                   -- LOCAL
+        RPERIODMIN : TIME;              -- PARAMETER
+        RPERIODMAX : TIME;              -- PARAMETER
+        RSAMPMIN : TIME;                -- PARAMETER
+        RSAMPMAX : TIME;                -- PARAMETER
+        RSCANMIN : TIME;                -- PARAMETER
+        RSCANMAX : TIME)                -- PARAMETER
+returns (constraint : bool);
+let
+  constraint =
+    rclock(time, rstate, rclk, RPERIODMIN, RPERIODMAX, RSAMPMIN, RSAMPMAX, RSCANMIN, RSCANMAX) and
+    rdec(tdata, rstate, rdata, rbit);
+tel;
+
+
+------------------------------------------------------------------------------
+-- System
+------------------------------------------------------------------------------
+
+type TURN = enum { CLOCK, TX, RX };
+
+node system(turn : TURN;
+            rclk : TIME;
+            tclk : TIME;
+            time : TIME;
+            tdata : WIRE;
+            tstate : int;
+            phase : PHASE;
+            tbit : subrange [0,1] of int;
+            tready : bool;
+            rdata : WIRE;
+            rbit : subrange [0,1] of int;
+            rstate : int;
+            ERROR : TIME;
+            TSETTLE : TIME;
+            TSTABLE : TIME;
+            RPERIODMIN : TIME;
+            RPERIODMAX : TIME;
+            RSAMPMIN : TIME;
+            RSAMPMAX : TIME;
+            RSCANMIN : TIME;
+            RSCANMAX : TIME)
+returns ();
+var
+  lemma1 : bool;
+  lemma2 : bool;
+  lemma3 : bool;
+  lemma4_1 : bool;
+  lemma4 : bool;
+  lemma5 : bool;
+  bmp_theorem :  bool;
+  counter : int;
+  consistency : bool;
+let
+  assert 0 <= tstate and tstate <= 9;
+  assert 1 <= rstate and rstate <= 10;
+  
+  assert TSETTLE(TSETTLE);
+  assert TSTABLE(TSTABLE, TSETTLE);
+  assert ERROR(ERROR);
+  assert RPERIODMIN(RPERIODMIN, ERROR);
+  assert RPERIODMAX(RPERIODMAX, ERROR);
+  assert RSAMPMIN(RSAMPMIN, ERROR);
+  assert RSAMPMAX(RSAMPMAX, ERROR);
+  assert RSCANMIN(RSCANMIN, ERROR);
+  assert RSCANMAX(RSCANMAX, ERROR);
+
+  assert if true -> turn = CLOCK then
+           clock(rclk, tclk, time)
+         else
+           time = pre time;
+
+  assert if true -> turn = TX then
+           tx(time, tclk, tdata, tstate, phase, tbit, tready, TSETTLE, TSTABLE)
+         else
+           tclk = pre tclk and
+           tdata = pre tdata and
+           tstate = pre tstate and
+           phase = pre phase and
+           tbit = pre tbit and
+           tready = pre tready;
+
+  assert if true -> turn = RX then
+           rx(time, tdata, rclk, rdata, rbit, rstate, RPERIODMIN, RPERIODMAX, RSAMPMIN, RSAMPMAX, RSCANMIN, RSCANMAX)
+         else
+           rclk = pre rclk and
+           rdata = pre rdata and
+           rbit = pre rbit and
+           rstate = pre rstate;
+
+  lemma1 = phase = Settle or tdata = One or tdata = Zero;
+  --%PROPERTY lemma1;
+
+  lemma2 = phase = Stable => tclk <= time + TSTABLE;
+  --%PROPERTY lemma2;
+
+  lemma3 = phase = Settle => tclk <= time + TSETTLE;
+  --%PROPERTY lemma3;
+
+  -- This lemma is not present in the SAL version,
+  -- but it makes lemma4 k-inductive at k = 1 instead of k = 13
+  lemma4_1 = tstate = 9 => tdata = One or tdata = ToOne;
+  --%PROPERTY lemma4_1;
+
+  lemma4 = tstate = 9 and phase = Stable => tdata = One;
+  --%PROPERTY lemma4;
+
+  lemma5 = ((phase = Settle) and
+            (rstate = 1) and
+            (tstate = 0) and
+            (rclk - tclk - TPERIOD > 8.0 * PERROR) and
+            (tclk + TPERIOD + TSTABLE - rclk > 8.0 * PERROR)) 
+           or
+           ((phase = Stable) and
+            (rstate = tstate + 1) and
+            ((rclk - tclk - TSETTLE) > real (9 - rstate) * PERROR) and
+            (tclk + TPERIOD - rclk  > real (9 - rstate) * PERROR) and
+            (rdata = tdata))
+           or   
+           ((phase = Settle) and 
+            (rstate = tstate) and
+            (rclk - tclk > real (9 - tstate) * PERROR) and
+            (tclk + TSTABLE - rclk > real (9 - rstate) * PERROR))
+           or 
+           ((phase = Stable) and
+            (rstate = tstate) and
+            (tclk - rclk > real (9 - rstate) * PERROR)  and
+            (rclk  - tclk + TSTABLE > real (9 - rstate) * PERROR))
+           or       
+           ((rstate = 10) and 
+            (tstate = 9) and 
+            ((phase = Stable and tdata = One) or phase = Settle) and
+            (rdata = tdata) and
+            (rclk <= time + RSCANMAX))
+           or
+           ((rstate = 10) and 
+            (tstate = 0) and 
+            (tdata = ToZero and rdata = One) and
+            (phase = Settle) and 
+            (rclk <= time + RSCANMAX))
+           or
+           ((rstate = 10) and 
+            (tstate = 0) and 
+            (tdata =  Zero and rdata = One) and
+            (phase = Stable) and
+            (tclk - rclk >=  TSTABLE - RSCANMAX));
+  --%PROPERTY lemma5;
+
+  bmp_theorem = true ->
+                  (pre rstate < 9) and (pre time = pre rclk) =>
+                    (pre time <> pre tclk) and
+                    (pre tstate = pre rstate) and
+                    (rbit = tbit);
+  --%PROPERTY bmp_theorem;
+
+  counter = 0 -> 1 + pre counter;
+  consistency = not (counter >= 20 and rstate = rstate);
+  --%PROPERTY consistency;
+tel;
