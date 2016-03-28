@@ -357,6 +357,7 @@ var
   lemma3 : bool;
   lemma4_1 : bool;
   lemma4 : bool;
+  lemma5_1 : bool;
   lemma5 : bool;
   bmp_theorem :  bool;
   counter : int;
@@ -414,6 +415,14 @@ let
 
   lemma4 = tstate = 9 and phase = Stable => tdata = One;
   --%PROPERTY lemma4;
+
+  -- This lemma is not present in the SAL version,
+  -- but it makes lemma5 k-inductive at k = 1 instead of k = 3
+  lemma5_1 = (tdata = One and rdata = Zero => rclk < tclk) and
+             (tstate = 0 => rstate = 10 or rdata = Zero) and
+             (rstate = 10 => time + RSCANMAX >= rclk) and
+             (tdata = ToOne => rstate = tstate);
+  --%PROPERTY lemma5_1;
 
   lemma5 = ((phase = Settle) and
             (rstate = 1) and
